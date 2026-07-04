@@ -2,8 +2,15 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 from textblob import TextBlob
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import requests
 import time
+from urllib.parse import quote
+
+# VADER needs to be initialized once — it loads a lexicon of word-to-score
+# mappings from disk. Doing this at module level (not inside the loop) means
+# it only happens once per app run, not once per headline.
+vader = SentimentIntensityAnalyzer()
 
 st.set_page_config(
     page_title="StockSense AI",
@@ -416,10 +423,73 @@ if ticker:
         try:
             with st.spinner("Loading live headlines..."):
                 api_key = st.secrets["NEWS_API_KEY"]
-                search_term = ticker.replace(".NS","").replace(".BO","")
-                url = f"https://newsapi.org/v2/everything?q={search_term}&language=en&sortBy=publishedAt&pageSize=5&apiKey={api_key}"
+
+                # The problem: stripping ".NS" off a ticker like "axisbank.NS"
+                # gives "axisbank" — no space, wrong case — which barely
+                # matches real news articles that say "Axis Bank". A
+                # camelCase splitter doesn't help either, since users often
+                # type tickers in all lowercase.
+                # The reliable fix is a lookup table mapping known tickers
+                # to their real company name for the news search. This list
+                # can be extended with more NSE tickers as needed.
+                TICKER_NAME_MAP = {
+                    "RELIANCE": "Reliance Industries",
+                    "TCS": "Tata Consultancy Services",
+                    "INFY": "Infosys",
+                    "HDFCBANK": "HDFC Bank",
+                    "ICICIBANK": "ICICI Bank",
+                    "AXISBANK": "Axis Bank",
+                    "SBIN": "State Bank of India",
+                    "KOTAKBANK": "Kotak Mahindra Bank",
+                    "ITC": "ITC Limited",
+                    "HINDUNILVR": "Hindustan Unilever",
+                    "BHARTIARTL": "Bharti Airtel",
+                    "LT": "Larsen & Toubro",
+                    "MARUTI": "Maruti Suzuki",
+                    "WIPRO": "Wipro",
+                    "ASIANPAINT": "Asian Paints",
+                    "TATASTEEL": "Tata Steel",
+                    "TATAMOTORS": "Tata Motors",
+                    "HCLTECH": "HCL Technologies",
+                    "SUNPHARMA": "Sun Pharmaceutical",
+                    "BAJFINANCE": "Bajaj Finance",
+                }
+
+                # Some raw tickers are also common English words or heavily
+                # overloaded abbreviations, so searching them bare pulls in
+                # garbage matches with nothing to do with the company:
+                #   "RELIANCE" matched "...push for self-reliance"
+                #   "LT" matched "Lt. Col. ... passes away", a baby carrier
+                #   listing, a Chevrolet listing — "Lt." and "LT" are used
+                #   everywhere for "Lieutenant", product codes, etc.
+                # For these, we search ONLY the quoted full company name,
+                # never the bare ticker, even though that means slightly
+                # fewer matches for genuinely TCS/INFY-style headlines.
+                AMBIGUOUS_TICKERS = {"RELIANCE", "LT", "ITC"}
+
+                raw_symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
+                company_name = TICKER_NAME_MAP.get(raw_symbol)
+
+                if company_name and raw_symbol in AMBIGUOUS_TICKERS:
+                    search_term = f'"{company_name}"'
+                elif company_name:
+                    search_term = f'{raw_symbol} OR "{company_name}"'
+                else:
+                    search_term = raw_symbol  # not in our lookup table yet
+
+                # IMPORTANT: NewsAPI's default 'q' param searches title,
+                # description, AND full article body. That's why a generic
+                # "20 stocks to watch" market roundup was matching Axis Bank
+                # searches — the word "Axis Bank" was probably buried
+                # somewhere in that article's body text, even though the
+                # headline itself wasn't about Axis Bank at all.
+                # 'qInTitle' restricts matching to the headline only, which
+                # is a much stronger relevance signal for what we're doing.
+                url = f"https://newsapi.org/v2/everything?qInTitle={quote(search_term)}&language=en&sortBy=publishedAt&pageSize=5&apiKey={api_key}"
                 response = requests.get(url)
                 news_data = response.json()
+
+            MIN_ARTICLES_FOR_VERDICT = 3
 
             if news_data["status"] == "ok" and news_data["totalResults"] > 0:
                 articles = news_data["articles"]
@@ -427,7 +497,22 @@ if ticker:
                 scored = []
                 for article in articles:
                     headline = article["title"]
-                    score = TextBlob(headline).sentiment.polarity
+
+                    # TextBlob: polarity score from -1 (negative) to +1 (positive),
+                    # based on a lexicon + grammar rules, tuned for general text.
+                    tb_score = TextBlob(headline).sentiment.polarity
+
+                    # VADER: also -1 to +1, but tuned specifically for short,
+                    # informal text like headlines/tweets — it understands
+                    # punctuation ("!!!"), capitalization ("SURGES"), and
+                    # negation ("not good") better than TextBlob does.
+                    vader_score = vader.polarity_scores(headline)["compound"]
+
+                    # Ensemble: average the two so neither model's blind spots
+                    # dominate the final call. This also gives us something to
+                    # show/compare in the UI instead of a single black-box number.
+                    score = (tb_score + vader_score) / 2
+
                     total += score
                     if score > 0:
                         dot_color = "#0D9E7E"
@@ -438,40 +523,53 @@ if ticker:
                     else:
                         dot_color = "#F59E0B"
                         label = "Neutral"
-                    scored.append((headline, dot_color, label, score))
+                    scored.append((headline, dot_color, label, score, tb_score, vader_score))
 
-                for headline, dot_color, label, score in scored:
+                for headline, dot_color, label, score, tb_score, vader_score in scored:
                     st.markdown(f"""
                     <div class="news-card">
                         <div class="news-dot" style="background:{dot_color}"></div>
                         <div>
                             <div class="news-headline">{headline}</div>
-                            <div class="news-sentiment">{label} · Score: {score:.2f}</div>
+                            <div class="news-sentiment">{label} · Ensemble: {score:.2f} &nbsp;|&nbsp; TextBlob: {tb_score:.2f} · VADER: {vader_score:.2f}</div>
                         </div>
                     </div>""", unsafe_allow_html=True)
 
                 avg = total / len(articles)
+                low_confidence = len(articles) < MIN_ARTICLES_FOR_VERDICT
             else:
-                st.warning("No live news found. Showing generic sentiment.")
-                avg = 0.1
+                st.warning("No live news found for this stock.")
+                # Important: avg = None here, NOT a fake positive number.
+                # A previous version hardcoded avg = 0.1 as a "generic"
+                # fallback, which meant a stock with ZERO news articles
+                # would still show a confident "BULLISH" verdict — that's
+                # worse than showing nothing, since it fabricates a signal
+                # that was never actually measured.
+                avg = None
                 scored = []
+                low_confidence = True
 
         except Exception as news_err:
             st.warning(f"News fetch failed: {news_err}")
-            avg = 0
+            avg = None
             scored = []
+            low_confidence = True
 
     with col_verdict:
-        pos_count = sum(1 for _, _, l, _ in scored if l == "Positive")
-        neg_count = sum(1 for _, _, l, _ in scored if l == "Negative")
-        neu_count = sum(1 for _, _, l, _ in scored if l == "Neutral")
+        pos_count = sum(1 for _, _, l, _, _, _ in scored if l == "Positive")
+        neg_count = sum(1 for _, _, l, _, _, _ in scored if l == "Negative")
+        neu_count = sum(1 for _, _, l, _, _, _ in scored if l == "Neutral")
         total_count = max(len(scored), 1)
 
         pos_pct = int((pos_count / total_count) * 100)
         neg_pct = int((neg_count / total_count) * 100)
         neu_pct = 100 - pos_pct - neg_pct
 
-        if avg > 0:
+        if avg is None:
+            verdict_class = "verdict-neutral"
+            verdict_text_class = "verdict-text-neut"
+            verdict_word = "NO DATA 🚫"
+        elif avg > 0:
             verdict_class = "verdict-bullish"
             verdict_text_class = "verdict-text-bull"
             verdict_word = "BULLISH 🚀"
@@ -484,19 +582,28 @@ if ticker:
             verdict_text_class = "verdict-text-neut"
             verdict_word = "NEUTRAL ➡️"
 
+        score_display = f"{avg:.2f}" if avg is not None else "—"
         st.markdown(f"""
         <div class="verdict-box {verdict_class}">
             <div class="verdict-label">AI Verdict</div>
             <div class="{verdict_text_class}">{verdict_word}</div>
-            <div class="verdict-score">Sentiment score: {avg:.2f}</div>
+            <div class="verdict-score">Sentiment score: {score_display}</div>
         </div>
+        """, unsafe_allow_html=True)
 
+        if low_confidence:
+            st.caption(
+                f"⚠️ Based on only {len(scored)} headline(s) — too small a "
+                "sample to be reliable. Treat this verdict as low-confidence."
+            )
+
+        st.markdown(f"""
         <div class="score-row">
-            <div class="score-name">Positive</div>
+            <div class="score-name">Negative</div>
             <div class="score-track">
-                <div class="score-fill" style="width:{pos_pct}%;background:#0D9E7E"></div>
+                <div class="score-fill" style="width:{neg_pct}%;background:#E05252"></div>
             </div>
-            <div class="score-pct">{pos_pct}%</div>
+            <div class="score-pct">{neg_pct}%</div>
         </div>
         <div class="score-row">
             <div class="score-name">Neutral</div>
@@ -506,11 +613,11 @@ if ticker:
             <div class="score-pct">{neu_pct}%</div>
         </div>
         <div class="score-row">
-            <div class="score-name">Negative</div>
+            <div class="score-name">Positive</div>
             <div class="score-track">
-                <div class="score-fill" style="width:{neg_pct}%;background:#E05252"></div>
+                <div class="score-fill" style="width:{pos_pct}%;background:#0D9E7E"></div>
             </div>
-            <div class="score-pct">{neg_pct}%</div>
+            <div class="score-pct">{pos_pct}%</div>
         </div>
         """, unsafe_allow_html=True)
 

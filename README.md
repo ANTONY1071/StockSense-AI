@@ -8,7 +8,7 @@ An AI-powered Indian stock market intelligence dashboard built with Python and S
 - Live NSE/BSE stock data via yFinance
 - Interactive candlestick charts
 - MA10 & MA20 moving average overlays
-- Real-time news sentiment analysis powered by TextBlob
+- Ensemble sentiment analysis (TextBlob + VADER, averaged) on live headlines
 - Live headlines fetched from NewsAPI
 
 ## 🛠️ Tech Stack
@@ -17,11 +17,12 @@ An AI-powered Indian stock market intelligence dashboard built with Python and S
 - yFinance
 - Plotly
 - TextBlob
+- VADER (vaderSentiment)
 - NewsAPI
 - Requests
 
 ## 👤 Author
-**Antony** — 1st Year AI & Data Science Student  
+**Antony** — 2nd Year AI & Data Science Student  
 Jerusalem College of Engineering, Chennai
 
 ## 📌 Note
