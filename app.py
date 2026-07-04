@@ -267,7 +267,7 @@ with st.sidebar:
 
     st.markdown("""
     <div style='background:#F0FAF7;border:1px solid #C8EDE4;border-radius:10px;padding:14px'>
-        <div style='font-size:12px;font-weight:700;color:#0A3D30'>Antony N.</div>
+        <div style='font-size:12px;font-weight:700;color:#0A3D30'>Nitheen Antony</div>
         <div style='font-size:11px;color:#7DBFB0;line-height:1.7;margin-top:2px'>
             AI & Data Science<br>
             Jerusalem College of Engg.<br>
@@ -624,6 +624,6 @@ if ticker:
     st.markdown("""
     <div style='text-align:center;margin-top:2rem;padding-top:1rem;
                 border-top:1px solid #D6EFE8;font-size:11px;color:#A8CFC7'>
-        StockSense AI · Built by Antony N. · Jerusalem College of Engineering · Chennai
+        StockSense AI · Built by Nitheen Antony · Jerusalem College of Engineering · Chennai
     </div>
     """, unsafe_allow_html=True)
